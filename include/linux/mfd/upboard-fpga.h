@@ -1,12 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Intel AAEON UP Board series platform core driver
- * and FPGA configuration support
+ * UP Board CPLD/FPGA driver
  *
- * Copyright (c) 2017, Emutex Ltd. All rights reserved.
- * Copyright (c) 2022, YunJingTech Ltd.
+ * Copyright (c) AAEON. All rights reserved.
  *
- * Author: Javier Arteaga <javier@emutex.com>
+ * Author: Gary Wang <garywang@aaeon.com.tw>
+ *
  */
 
 #ifndef __LINUX_MFD_UPBOARD_FPGA_H
