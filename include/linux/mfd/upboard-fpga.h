@@ -11,7 +11,7 @@
 #ifndef __LINUX_MFD_UPBOARD_FPGA_H
 #define __LINUX_MFD_UPBOARD_FPGA_H
 
-/* fpga/EC protocol hardware version */
+/* CPLD/FPGA protocol version */
 #define UPFPGA_PROTOCOL_V1_HRV		1
 #define UPFPGA_PROTOCOL_V2_HRV		2
 
@@ -37,7 +37,7 @@ enum upboard_fpgareg {
 struct upboard_fpga {
 	struct device			*dev;
 	struct regmap			*regmap;
-	const struct regmap_config	*regmapconf;
+	struct regmap_config		*cpld_config;
 	struct gpio_desc		*enable_gpio;
 	struct gpio_desc		*reset_gpio;
 	struct gpio_desc		*clear_gpio;
@@ -53,5 +53,6 @@ struct upboard_led_data {
 };
 
 bool regmap_check_writeable(struct upboard_fpga *fpga, unsigned int reg);
+int upboard_led_gpio_register(struct upboard_fpga *fpga);
 
 #endif /*  __LINUX_MFD_UPBOARD_FPGA_H */

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * UP Board FPGA-based LED driver
+ * UP Board CPLD/FPGA based LED driver
  *
- * Copyright (c) 2017, Emutex Ltd. All rights reserved.
- * Copyright (c) 2022, YunJingTech Ltd.
+ * Copyright (c) AAEON. All rights reserved.
  *
- * Author: Javier Arteaga <javier@emutex.com>
+ * Author: Gary Wang <garywang@aaeon.com.tw>
  */
 
 #include <linux/kernel.h>
@@ -16,8 +15,9 @@
 #include <linux/regmap.h>
 
 struct upboard_led {
-	struct led_classdev cdev;
 	struct regmap_field *field;
+	struct led_classdev cdev;
+	unsigned char bit;
 };
 
 static enum led_brightness upboard_led_brightness_get(struct led_classdev *cdev)
@@ -73,7 +73,7 @@ static struct platform_driver upboard_led_driver = {
 };
 module_platform_driver_probe(upboard_led_driver, upboard_led_probe);
 
-MODULE_AUTHOR("Javier Arteaga <javier@emutex.com>");
+MODULE_AUTHOR("Gary Wang <garywang@aaeon.com.tw>");
 MODULE_DESCRIPTION("UP Board LED driver");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:upboard-led");
