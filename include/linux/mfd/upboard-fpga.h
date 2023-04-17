@@ -52,7 +52,8 @@ struct upboard_led_data {
 	const char			*colour;
 };
 
-bool regmap_check_writeable(struct upboard_fpga *fpga, unsigned int reg);
+static int upboard_fpga_read(void *, unsigned int, unsigned int *);
+static int upboard_fpga_write(void *, unsigned int, unsigned int);
 int upboard_led_gpio_register(struct upboard_fpga *fpga);
 
 #endif /*  __LINUX_MFD_UPBOARD_FPGA_H */

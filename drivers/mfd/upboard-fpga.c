@@ -180,7 +180,7 @@ static const struct regmap_config upboard_up_regmap_config = {
 	.reg_read = upboard_fpga_read,
 	.reg_write = upboard_fpga_write,
 	.fast_io = false,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_NONE,
 	.rd_table = &upboard_up_readable_table,
 	.wr_table = &upboard_up_writable_table,
 };
@@ -482,6 +482,7 @@ static int __init upboard_fpga_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	platform_set_drvdata(pdev, fpga);
+	fpga->dev = dev;
 	fpga->regmap = devm_regmap_init(dev, NULL, fpga, fpga_data->cpld_config);
 	fpga->cpld_config = fpga_data->cpld_config;
 
