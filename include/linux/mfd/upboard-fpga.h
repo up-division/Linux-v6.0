@@ -8,8 +8,8 @@
  *
  */
 
-#ifndef __LINUX_MFD_UPBOARD_FPGA_H
-#define __LINUX_MFD_UPBOARD_FPGA_H
+#ifndef __MFD_UPBOARD_FPGA_H
+#define __MFD_UPBOARD_FPGA_H
 
 /* CPLD/FPGA protocol version */
 #define UPFPGA_PROTOCOL_V1_HRV		1
@@ -18,7 +18,7 @@
 #define UPFPGA_ADDRESS_SIZE		7
 #define UPFPGA_REGISTER_SIZE		16
 
-#define UPFPGA_READ_FLAG		(1 << UPFPGA_ADDRESS_SIZE)
+#define UPFPGA_READ_FLAG		BIT(UPFPGA_ADDRESS_SIZE)
 
 enum upboard_fpgareg {
 	UPFPGA_REG_PLATFORM_ID		= 0x10,
@@ -35,15 +35,15 @@ enum upboard_fpgareg {
 };
 
 struct upboard_fpga {
-	struct device			*dev;
-	struct regmap			*regmap;
-	struct regmap_config		*cpld_config;
-	struct gpio_desc		*enable_gpio;
-	struct gpio_desc		*reset_gpio;
-	struct gpio_desc		*clear_gpio;
-	struct gpio_desc		*strobe_gpio;
-	struct gpio_desc		*datain_gpio;
-	struct gpio_desc		*dataout_gpio;
+	struct device				*dev;
+	struct regmap				*regmap;
+	const struct regmap_config	*regmap_config;
+	struct gpio_desc			*enable_gpio;
+	struct gpio_desc			*reset_gpio;
+	struct gpio_desc			*clear_gpio;
+	struct gpio_desc			*strobe_gpio;
+	struct gpio_desc			*datain_gpio;
+	struct gpio_desc			*dataout_gpio;
 	bool				uninitialised;
 };
 
@@ -52,8 +52,4 @@ struct upboard_led_data {
 	const char			*colour;
 };
 
-static int upboard_fpga_read(void *, unsigned int, unsigned int *);
-static int upboard_fpga_write(void *, unsigned int, unsigned int);
-int upboard_led_gpio_register(struct upboard_fpga *fpga);
-
-#endif /*  __LINUX_MFD_UPBOARD_FPGA_H */
+#endif /*  __MFD_UPBOARD_FPGA_H */

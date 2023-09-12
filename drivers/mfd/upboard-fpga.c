@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * UP Board multi function device driver for control CPLD/FPGA to
+ * UP Board for control CPLD/FPGA to
  * provide more GPIO driving power also provide CPLD LEDs and pin mux function
  * recognize HID AANT0F00 ~ AAANT0F04 in ACPI name space
  *
@@ -18,68 +18,45 @@
 #include <linux/mfd/core.h>
 #include <linux/mfd/upboard-fpga.h>
 #include <linux/module.h>
-#include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <linux/bits.h>
-#include <linux/err.h>
 
 struct upboard_fpga_data {
-	const struct regmap_config *cpld_config;
+	const struct regmap_config *regmap_config;
 	const struct mfd_cell *cells;
 	size_t ncells;
 };
+
+static struct gpio_led_platform_data pdata;
+
+#define RESET_DEVICE 1
+#define ENABLE_DEVICE 1
 
 #define AAEON_MANUFACTURER_ID		0x01
 #define SUPPORTED_FW_MAJOR		0x0
 #define MENUFACTURER_ID_MASK		GENMASK(7, 0)
 
-#define FIRMWARE_ID_BUILD_OFFSET	(12)
-#define FIRMWARE_ID_MAJOR_OFFSET	(8)
-#define FIRMWARE_ID_MINOR_OFFSET	(4)
-#define FIRMWARE_ID_PATCH_OFFSET	(0)
+#define FIRMWARE_ID_BUILD_OFFSET	12
+#define FIRMWARE_ID_MAJOR_OFFSET	8
+#define FIRMWARE_ID_MINOR_OFFSET	4
+#define FIRMWARE_ID_PATCH_OFFSET	0
 #define FIRMWARE_ID_MASK		GENMASK(3, 0)
 
 /*
- * For UP Board Series FPGA register read/write protocols
- * EMUTEX specs:
- * D0   D1  D2  D3  D4  D5  D6  D7  D8  D9 .... D22  D23
- * [RW][        address           ][        DATA        ]
- *
- * Read Sequence:
- *      ___   ____________________________________________________   _________
- * clr:    \_/ <--low-pulse does start the write-readback         \_/<--start
- *              sequence with partital reset of internal          new sequence
- *              registers but the CONF-REG.
- *        ____________________________________________________________________
- * rst: _/       _   _   _        _   _   _   __       __   __   _
- * stb: STB#1->_/1\_/2\_/3\_...._/7\_/8\_/9\_/10\_..../23\_/24\_/<-STB#25 edge
- *                                                                   is needed
- *                                                                   to ACK
- *             (D0 - D7 stb rising latch)
- * data_in:     D0  D1  D2  .... D6  D7  don't ........ care(DC)
- * data_out:    don't ...........care(DC)  D8   D9 ....  D22  D23
- *                                   (D8 - D23 stb falling latch)
- * flag_Read:                             _________...._________
- *      __DC_   ____________...._________/                      \_
- * counter:
- *    [00]DC[00][01][02] ............[08][9][10]............[24][00]
- * CONF-REG:
- *    [00] [                     CONF-REG                       ]
- * wreg:
- *    [00]DC[00][  wreg=SHFT(wreg)  ][ADR][DATA][wreg=SHFT(wreg)]
- * wreg2:
- *                                        [    (COPY)=ADDR      ]
+ * read CPLD register on custom protocol
+ * send clock and addr bit in strobe and datain pins then read from dataout pin
  */
 static int upboard_fpga_read(void *context, unsigned int reg, unsigned int *val)
 {
 	struct upboard_fpga * const fpga = context;
 	int i;
 
+	/* clear to start new transcation */
 	gpiod_set_value(fpga->clear_gpio, 0);
 	gpiod_set_value(fpga->clear_gpio, 1);
 
 	reg |= UPFPGA_READ_FLAG;
 
+	/* send clock and data from strobe & datain */
 	for (i = UPFPGA_ADDRESS_SIZE; i >= 0; i--) {
 		gpiod_set_value(fpga->strobe_gpio, 0);
 		gpiod_set_value(fpga->datain_gpio, !!(reg & BIT(i)));
@@ -89,6 +66,7 @@ static int upboard_fpga_read(void *context, unsigned int reg, unsigned int *val)
 	gpiod_set_value(fpga->strobe_gpio, 0);
 	*val = 0;
 
+	/* read from dataout */
 	for (i = UPFPGA_REGISTER_SIZE - 1; i >= 0; i--) {
 		gpiod_set_value(fpga->strobe_gpio, 1);
 		gpiod_set_value(fpga->strobe_gpio, 0);
@@ -101,38 +79,19 @@ static int upboard_fpga_read(void *context, unsigned int reg, unsigned int *val)
 }
 
 /*
- * Write Sequence:
- *      ___   ____________________________________________________   _________
- * clr:    \_/ <--low-pulse does start the write-readback         \_/<--start
- *              sequence with partital reset of internal          new sequence
- *              registers but the CONF-REG.
- *        ____________________________________________________________________
- * rst: _/       _   _   _        _   _   _   __       __   __   _
- * stb: STB#1->_/1\_/2\_/3\_...._/7\_/8\_/9\_/10\_..../23\_/24\_/<-STB#25 edge
- *                                                                   is needed
- *                                                                   to ACK
- *             (D0 - D23 stb rising latch)
- * data_in:     D0  D1  D2  .... D6  D7  D8  D9 ....  D22  D23
- * data_out:    don't ................................care (DC)
- * flag_Read:
- *      __DC_   ____________....__________________________________
- * counter:
- *    [00]DC[00][01][02] ............[08][9][10]............[24][00]
- * wreg:
- *    [00]DC[00][wreg=SHFT(wreg)&dat_in ][SHFT(wreg)&dat_in][DAT]
- * wreg2:
- *                                   [     (COPY)=ADDR          ]
- * CONF-REG:
- *    [00] [                 CONF-REG = OLD VALUE               ][CONF-REG=DAT]
+ * write CPLD register on custom protocol
+ * send clock and addr bit in strobe and datain pins then write to datain pin
  */
 static int upboard_fpga_write(void *context, unsigned int reg, unsigned int val)
 {
 	struct upboard_fpga * const fpga = context;
 	int i;
 
+	/* clear to start new transcation */
 	gpiod_set_value(fpga->clear_gpio, 0);
 	gpiod_set_value(fpga->clear_gpio, 1);
 
+	/* send clock and data from strobe & datain */
 	for (i = UPFPGA_ADDRESS_SIZE; i >= 0; i--) {
 		gpiod_set_value(fpga->strobe_gpio, 0);
 		gpiod_set_value(fpga->datain_gpio, !!(reg & BIT(i)));
@@ -141,6 +100,7 @@ static int upboard_fpga_write(void *context, unsigned int reg, unsigned int val)
 
 	gpiod_set_value(fpga->strobe_gpio, 0);
 
+	/* write to datain pin */
 	for (i = UPFPGA_REGISTER_SIZE - 1; i >= 0; i--) {
 		gpiod_set_value(fpga->datain_gpio, !!(val & BIT(i)));
 		gpiod_set_value(fpga->strobe_gpio, 1);
@@ -185,6 +145,7 @@ static const struct regmap_config upboard_up_regmap_config = {
 	.wr_table = &upboard_up_writable_table,
 };
 
+/* 3 LEDs controlled by CPLD */
 static struct upboard_led_data upboard_up_led_data[] = {
 	{ .bit = 0, .colour = "yellow" },
 	{ .bit = 1, .colour = "green" },
@@ -192,29 +153,29 @@ static struct upboard_led_data upboard_up_led_data[] = {
 };
 
 static const struct mfd_cell upboard_up_mfd_cells[] = {
-	{ .name = "upboard-pinctrl" },
+	MFD_CELL_NAME("upboard-pinctrl"),
 	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up_led_data[0],
-		       sizeof(*upboard_up_led_data), 0),
-	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up_led_data[1],
 		       sizeof(*upboard_up_led_data), 1),
-	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up_led_data[2],
+	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up_led_data[1],
 		       sizeof(*upboard_up_led_data), 2),
+	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up_led_data[2],
+		       sizeof(*upboard_up_led_data), 3),
 };
 
 /* UP Squared 6000 EHL board */
 
 static const struct upboard_fpga_data upboard_up_fpga_data = {
-	.cpld_config = &upboard_up_regmap_config,
+	.regmap_config = &upboard_up_regmap_config,
 	.cells = upboard_up_mfd_cells,
 	.ncells = ARRAY_SIZE(upboard_up_mfd_cells),
 };
 
 static const struct mfd_cell upboard_pinctrl_cells[] = {
-	{ .name = "upboard-pinctrl" },
+	MFD_CELL_NAME("upboard-pinctrl"),
 };
 
 static const struct upboard_fpga_data upboard_pinctrl_data = {
-	.cpld_config = &upboard_up_regmap_config,
+	.regmap_config = &upboard_up_regmap_config,
 	.cells = upboard_pinctrl_cells,
 	.ncells = ARRAY_SIZE(upboard_pinctrl_cells),
 };
@@ -263,19 +224,19 @@ static struct upboard_led_data upboard_up2_led_data[] = {
 };
 
 static const struct mfd_cell upboard_up2_mfd_cells[] = {
-	{ .name = "upboard-pinctrl" },
+	MFD_CELL_NAME("upboard-pinctrl"),
 	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[0],
-		       sizeof(*upboard_up2_led_data), 0),
-	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[1],
 		       sizeof(*upboard_up2_led_data), 1),
-	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[2],
+	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[1],
 		       sizeof(*upboard_up2_led_data), 2),
-	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[3],
+	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[2],
 		       sizeof(*upboard_up2_led_data), 3),
+	MFD_CELL_BASIC("upboard-led", NULL, &upboard_up2_led_data[3],
+		       sizeof(*upboard_up2_led_data), 4),
 };
 
 static const struct upboard_fpga_data upboard_up2_fpga_data = {
-	.cpld_config = &upboard_up2_regmap_config,
+	.regmap_config = &upboard_up2_regmap_config,
 	.cells = upboard_up2_mfd_cells,
 	.ncells = ARRAY_SIZE(upboard_up2_mfd_cells),
 };
@@ -284,7 +245,7 @@ static const struct upboard_fpga_data upboard_up2_fpga_data = {
 
 /* same MAX10 config as UP2, but same LED cells as UP1 */
 static const struct upboard_fpga_data upboard_upcore_crst02_fpga_data = {
-	.cpld_config = &upboard_up2_regmap_config,
+	.regmap_config = &upboard_up2_regmap_config,
 	.cells = upboard_up_mfd_cells,
 	.ncells = ARRAY_SIZE(upboard_up_mfd_cells),
 };
@@ -325,26 +286,20 @@ static int __init upboard_fpga_gpio_init(struct upboard_fpga *fpga)
 		if (IS_ERR(fpga->reset_gpio))
 			return PTR_ERR(fpga->reset_gpio);
 
-		gpiod_set_value(fpga->reset_gpio, 1);
+		gpiod_set_value(fpga->reset_gpio, RESET_DEVICE);
 	}
 
-	gpiod_set_value(fpga->enable_gpio, 1);
+	gpiod_set_value(fpga->enable_gpio, ENABLE_DEVICE);
 	fpga->uninitialised = false;
 
 	return 0;
 }
 
-/*
- * This function is for debugging with user for showing firmware information.
- */
-static int __init upboard_fpga_show_firmware_info(struct upboard_fpga *fpga)
+static int __init upboard_fpga_verify_device(struct upboard_fpga *fpga)
 {
 	unsigned int platform_id, manufacturer_id;
 	unsigned int firmware_id, build, major, minor, patch;
 	int ret;
-
-	if (!fpga)
-		return -ENOMEM;
 
 	ret = regmap_read(fpga->regmap, UPFPGA_REG_PLATFORM_ID, &platform_id);
 	if (ret)
@@ -353,7 +308,7 @@ static int __init upboard_fpga_show_firmware_info(struct upboard_fpga *fpga)
 	manufacturer_id = platform_id & MENUFACTURER_ID_MASK;
 	if (manufacturer_id != AAEON_MANUFACTURER_ID) {
 		dev_err(fpga->dev,
-			"driver not compatible with custom FPGA FW from manufacturer id 0x%02x. Exiting",
+			"Manufacturer ID 0x%02x not supported\n",
 			manufacturer_id);
 
 		return -ENODEV;
@@ -369,35 +324,29 @@ static int __init upboard_fpga_show_firmware_info(struct upboard_fpga *fpga)
 	patch = (firmware_id >> FIRMWARE_ID_PATCH_OFFSET) & FIRMWARE_ID_MASK;
 
 	if (major != SUPPORTED_FW_MAJOR) {
-		dev_err(fpga->dev, "unsupported FPGA FW v%u.%u.%u build 0x%02x",
-			major, minor, patch, build);
+		dev_err(fpga->dev, "Manufacturer ID 0x%02x not supported\n", build);
 
 		return -ENODEV;
 	}
 
-	dev_info(fpga->dev, "compatible FPGA FW v%u.%u.%u build 0x%02x",
+	dev_info(fpga->dev, "Compatible FPGA FW v%u.%u.%u build 0x%02x",
 		 major, minor, patch, build);
 
 	return 0;
 }
 
-/*
- * MFD upboard-fpga is ACPI driver and can recognize the AANT ID from different
- * kind of upboards. We get the LED GPIO initialized information from this
- * then add led-upboard driver.
- */
-int upboard_led_gpio_register(struct upboard_fpga *fpga)
+static const struct mfd_cell upboard_gpio_led_cells[] = {
+	MFD_CELL_BASIC("leds-gpio", NULL,
+		       &pdata,
+		       sizeof(pdata), 0)
+};
+
+static int upboard_led_gpio_register(struct upboard_fpga *fpga)
 {
 	struct gpio_led blue_led, yellow_led, green_led, red_led;
 	struct gpio_desc *desc;
-	static struct gpio_led upboard_gpio_leds[4];
-	int leds = 0;
-	static struct gpio_led_platform_data upboard_gpio_led_platform_data;
-	static const struct mfd_cell upboard_gpio_led_cells[] = {
-		MFD_CELL_BASIC("leds-gpio", NULL,
-			       &upboard_gpio_led_platform_data,
-			       sizeof(upboard_gpio_led_platform_data), 0)
-	};
+	static struct gpio_led leds[4];
+	int num_leds = 0;
 	int ret;
 
 	desc = devm_gpiod_get(fpga->dev, "blue", GPIOD_OUT_LOW);
@@ -405,53 +354,73 @@ int upboard_led_gpio_register(struct upboard_fpga *fpga)
 		blue_led.name = "upboard:blue:";
 		blue_led.gpio = desc_to_gpio(desc);
 		blue_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
-		upboard_gpio_leds[leds++] = blue_led;
+		leds[num_leds++] = blue_led;
 		devm_gpiod_put(fpga->dev, desc);
 	}
+
 	desc = devm_gpiod_get(fpga->dev, "yellow", GPIOD_OUT_LOW);
 	if (!IS_ERR(desc)) {
 		yellow_led.name = "upboard:yellow:";
 		yellow_led.gpio = desc_to_gpio(desc);
 		yellow_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
-		upboard_gpio_leds[leds++] = yellow_led;
+		leds[num_leds++] = yellow_led;
 		devm_gpiod_put(fpga->dev, desc);
 	}
+
 	desc = devm_gpiod_get(fpga->dev, "green", GPIOD_OUT_LOW);
 	if (!IS_ERR(desc)) {
 		green_led.name = "upboard:green:";
 		green_led.gpio = desc_to_gpio(desc);
 		green_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
-		upboard_gpio_leds[leds++] = green_led;
+		leds[num_leds++] = green_led;
 		devm_gpiod_put(fpga->dev, desc);
 	}
+
 	desc = devm_gpiod_get(fpga->dev, "red", GPIOD_OUT_LOW);
 	if (!IS_ERR(desc)) {
 		red_led.name = "upboard:red:";
 		red_led.gpio = desc_to_gpio(desc);
 		red_led.default_state = LEDS_GPIO_DEFSTATE_KEEP;
-		upboard_gpio_leds[leds++] = red_led;
+		leds[num_leds++] = red_led;
 		devm_gpiod_put(fpga->dev, desc);
 	}
 
-	/* no LEDs */
-	if (leds == 0)
+	/* No optional LEDs defined */
+	if (num_leds == 0)
 		return 0;
 
-	upboard_gpio_led_platform_data.num_leds = leds;
-	upboard_gpio_led_platform_data.leds = upboard_gpio_leds;
+	pdata.num_leds = num_leds;
+	pdata.leds = leds;
 
 	ret = devm_mfd_add_devices(fpga->dev, PLATFORM_DEVID_AUTO,
 				   upboard_gpio_led_cells,
 				   ARRAY_SIZE(upboard_gpio_led_cells),
 				   NULL, 0, NULL);
 	if (ret) {
-		dev_err(fpga->dev, "Failed to add GPIO LEDs", ret);
+		dev_err(fpga->dev, "Failed to add GPIO LEDs, %d", ret);
 		return ret;
 	}
 
 	return 0;
 }
 
+/*
+ * --------------------------------------       ------------
+ * |    Intel SOC,1.8V                   | --- |ADC Chip   |  native driver
+ * | GPIO/I2C/SPI/UART/PWM               |     |SPI/I2C    |
+ * --------------------------------------      -------------
+ *            |                                     |
+ * ----------------------------------------------------------
+ * |        CPLD/FPGA Driver                                |   upboard-fpga CPLD control driver
+ * |   provide more GPIO driving power                      |   register leds-upboard
+ * |        HAT 40 pin mux function                         |   register pinctrl-upboard
+ * ---------------------------------------------------------
+ *    |                                      |
+ * ----------   -------------------------------------------
+ * |3 or 4|     |    HAT 40 pins, 3.3V                    |   leds-upboard
+ * | Leds |     |GPIO/ADC/I2C/SPI/UART/PWM                |  pinctrl-upboard
+ * ----------   -------------------------------------------
+ */
 static const struct acpi_device_id upboard_fpga_acpi_match[] = {
 	{ "AANT0000", (kernel_ulong_t)&upboard_pinctrl_data },
 	{ "AANT0F00", (kernel_ulong_t)&upboard_up_fpga_data },
@@ -465,11 +434,11 @@ MODULE_DEVICE_TABLE(acpi, upboard_fpga_acpi_match);
 
 static int __init upboard_fpga_probe(struct platform_device *pdev)
 {
-	struct upboard_fpga *fpga;
+	struct device *dev = &pdev->dev;
+	struct upboard_fpga *ddata;
 	const struct acpi_device_id *id;
 	const struct upboard_fpga_data *fpga_data;
 	int ret;
-	struct device *dev = &pdev->dev;
 
 	id = acpi_match_device(upboard_fpga_acpi_match, dev);
 	if (!id)
@@ -477,35 +446,30 @@ static int __init upboard_fpga_probe(struct platform_device *pdev)
 
 	fpga_data = (const struct upboard_fpga_data *) id->driver_data;
 
-	fpga = devm_kzalloc(dev, sizeof(*fpga), GFP_KERNEL);
-	if (!fpga)
+	ddata = devm_kzalloc(dev, sizeof(*ddata), GFP_KERNEL);
+	if (!ddata)
 		return -ENOMEM;
 
-	platform_set_drvdata(pdev, fpga);
-	fpga->dev = dev;
-	fpga->regmap = devm_regmap_init(dev, NULL, fpga, fpga_data->cpld_config);
-	fpga->cpld_config = fpga_data->cpld_config;
+	platform_set_drvdata(pdev, ddata);
+	ddata->dev = dev;
 
-	if (IS_ERR(fpga->regmap))
-		return PTR_ERR(fpga->regmap);
+	ddata->regmap = devm_regmap_init(dev, NULL, ddata, fpga_data->regmap_config);
+	if (IS_ERR(ddata->regmap))
+		return PTR_ERR(ddata->regmap);
 
-	ret = upboard_fpga_gpio_init(fpga);
+	ddata->regmap_config = fpga_data->regmap_config;
+
+	ret = upboard_fpga_gpio_init(ddata);
 	if (ret) {
-		/*
-		 * This is for compatiable with some upboards w/o FPGA firmware,
-		 * so just showing debug info and do not return directly.
-		 */
+		/* Not FPGA firmware, abort FPGA GPIO initialize process */
 		dev_warn(dev, "Failed to initialize FPGA common GPIOs: %d", ret);
 	} else {
-		upboard_fpga_show_firmware_info(fpga);
+		upboard_fpga_verify_device(ddata);
 	}
 
-	/* register GPIO LEDs */
-	ret = upboard_led_gpio_register(fpga);
+	ret = upboard_led_gpio_register(ddata);
 	if (ret) {
-		/*
-		 * This is for compatiable with some upboards w/o LEDs.
-		 */
+		/* LEDs are optional. */
 		dev_warn(dev, "Failed to register LEDs: %d", ret);
 	}
 
