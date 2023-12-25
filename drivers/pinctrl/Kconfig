@@ -486,7 +486,7 @@ config PINCTRL_THUNDERBAY
 config PINCTRL_UPBOARD
 	tristate "UP board FPGA pin controller"
 	depends on (X86 && ACPI) || COMPILE_TEST
-	depends on MFD_INTEL_UPBOARD_FPGA
+	depends on MFD_UPBOARD_FPGA
 	select GENERIC_PINCONF
 	select PINMUX
 	select PINCONF
@@ -494,6 +494,7 @@ config PINCTRL_UPBOARD
 	  Pin controller for the FPGA GPIO lines on UP boards. Due to the
 	  hardware layout, these are meant to be controlled in tandem with their
 	  corresponding Intel SoC GPIOs.
+
 	  To compile this driver as a module, choose M here: the module
 	  will be called pinctrl-upboard.
 

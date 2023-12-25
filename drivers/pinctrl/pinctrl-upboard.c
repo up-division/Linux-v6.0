@@ -1,84 +1,46 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * UP Board HAT pin controller driver
- * remapping native pin to RPI pin and set CPLD pin dir
+ * remapping native GPIO to RPI GPIO and set CPLD
  *
  * Copyright (c) AAEON. All rights reserved.
  *
  * Authors: Gary Wang <garywang@aaeon.com.tw>
- *
  */
 
-#include <linux/acpi.h>
 #include <linux/dmi.h>
 #include <linux/gpio/consumer.h>
 #include <linux/gpio/driver.h>
-#include <linux/kernel.h>
 #include <linux/mfd/upboard-fpga.h>
 #include <linux/module.h>
-#include <linux/pinctrl/pinctrl.h>
-#include <linux/pinctrl/pinmux.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/interrupt.h>
+#include <linux/seq_file.h>
 #include <linux/string.h>
+
+#include <linux/pinctrl/pinctrl.h>
+#include <linux/pinctrl/pinmux.h>
 
 #include "core.h"
 #include "intel/pinctrl-intel.h"
 
-/* for older kernel lost DIRECTION_IN/OUT definition */
-#ifndef GPIO_LINE_DIRECTION_IN
-#define GPIO_LINE_DIRECTION_IN		1
-#define GPIO_LINE_DIRECTION_OUT		0
-#endif
-
 /* Offset from regs */
-#define REVID						0x000
-#define REVID_SHIFT					16
-#define REVID_MASK					GENMASK(31, 16)
-#define PADBAR						0x00c
+#define REVID				0x000
+#define REVID_SHIFT			16
+#define REVID_MASK			GENMASK(31, 16)
+#define PADBAR				0x00c
 
-/* Offset from pad_regs */
-#define PADCFG0						0x000
-#define PADCFG0_RXEVCFG_SHIFT		25
-#define PADCFG0_RXEVCFG_MASK		GENMASK(26, 25)
-#define PADCFG0_RXEVCFG_LEVEL		0
-#define PADCFG0_RXEVCFG_EDGE		1
-#define PADCFG0_RXEVCFG_DISABLED	2
-#define PADCFG0_RXEVCFG_EDGE_BOTH	3
-#define PADCFG0_PREGFRXSEL			BIT(24)
-#define PADCFG0_RXINV				BIT(23)
-#define PADCFG0_GPIROUTIOXAPIC		BIT(20)
-#define PADCFG0_GPIROUTSCI			BIT(19)
-#define PADCFG0_GPIROUTSMI			BIT(18)
-#define PADCFG0_GPIROUTNMI			BIT(17)
-#define PADCFG0_PMODE_SHIFT			10
-#define PADCFG0_PMODE_MASK			GENMASK(13, 10)
-#define PADCFG0_PMODE_GPIO			0
-#define PADCFG0_GPIORXDIS			BIT(9)
-#define PADCFG0_GPIOTXDIS			BIT(8)
-#define PADCFG0_GPIORXSTATE			BIT(1)
-#define PADCFG0_GPIOTXSTATE			BIT(0)
-
-#define PADCFG1						0x004
-#define PADCFG1_TERM_UP				BIT(13)
-#define PADCFG1_TERM_SHIFT			10
-#define PADCFG1_TERM_MASK			GENMASK(12, 10)
-#define PADCFG1_TERM_20K			BIT(2)
-#define PADCFG1_TERM_5K				BIT(1)
-#define PADCFG1_TERM_1K				BIT(0)
-#define PADCFG1_TERM_833			(BIT(1) | BIT(0))
-
-#define PADCFG2						0x008
-#define PADCFG2_DEBEN				BIT(0)
-#define PADCFG2_DEBOUNCE_SHIFT		1
-#define PADCFG2_DEBOUNCE_MASK		GENMASK(4, 1)
-
-#define DEBOUNCE_PERIOD_NSEC		31250
-
-/* Additional features supported by the hardware */
-#define PINCTRL_FEATURE_DEBOUNCE	BIT(0)
-#define PINCTRL_FEATURE_1K_PD		BIT(1)
+#define PADCFG0				0x000
+#define PADCFG1				0x004
+#define PADCFG2				0x008
+#define PADCFG0_GPIORXDIS		BIT(9)
+#define PADCFG0_GPIOTXDIS		BIT(8)
+#define PADCFG0_GPIORXSTATE		BIT(1)
+#define PADCFG0_GPIOTXSTATE		BIT(0)
+#define PADCFG0_PMODE_GPIO		0
+#define PADCFG0_PMODE_SHIFT		10
+#define PADCFG0_PMODE_MASK		GENMASK(13, 10)
 
 #define BOARD_UP_CHT01				0
 #define BOARD_UP_APL01				1
@@ -97,7 +59,7 @@
 #define BOARD_UPX_ADLP01			15
 #define BOARD_UPN_ADLN01			16
 #define BOARD_UPS_ADLP01			BOARD_UPX_ADLP01
-#define BOARD_UP_ADLN01				BOARD_UPN_ADLN01
+#define BOARD_UP_ADLN01				18
 
 struct upboard_pin {
 	struct regmap_field *funcbit;
@@ -125,7 +87,7 @@ enum upboard_func0_fpgabit {
 	UPFPGA_I2C0_EN = 8,
 	UPFPGA_I2C1_EN = 9,
 	UPFPGA_CEC0_EN = 12,
-	UPFPGA_ADC0_EN = 14,
+	UPFPGA_ADC0_EN = 14
 };
 
 static const struct reg_field upboard_i2c0_reg =
@@ -208,7 +170,7 @@ enum upboard_up_reg1_fpgabit {
 	UPFPGA_UP_PWM1,
 	UPFPGA_UP_I2S_FRM,
 	UPFPGA_UP_GPIO26,
-	UPFPGA_UP_UART1_TX,
+	UPFPGA_UP_UART1_TX
 };
 
 enum upboard_up_reg2_fpgabit {
@@ -290,50 +252,6 @@ static const unsigned int upboard_up_rpi_mapping[] = {
 	UPBOARD_UP_BIT_TO_PIN(1, GPIO25),
 	UPBOARD_UP_BIT_TO_PIN(0, GPIO26),
 	UPBOARD_UP_BIT_TO_PIN(0, GPIO27),
-};
-
-static const unsigned int uart1_pins[] = { 14, 15, 16, 17 };
-static const unsigned int uart2_pins[] = { 25, 27 };
-static const unsigned int i2c0_pins[]  = { 0, 1 };
-static const unsigned int i2c1_pins[]  = { 2, 3 };
-static const unsigned int spi2_pins[]  = { 8, 9, 10, 11 };
-static const unsigned int i2s0_pins[]  = { 18, 19, 20, 21 };
-static const unsigned int pwm0_pins[]  = { 12 };
-static const unsigned int pwm1_pins[]  = { 13 };
-static const unsigned int adc0_pins[]  = { 4 };
-
-static const struct upboard_pingroup pin_groups[] = {
-	UPBOARD_PIN_GROUP("uart1_grp", uart1_pins),
-	UPBOARD_PIN_GROUP("uart2_grp", uart2_pins),
-	UPBOARD_PIN_GROUP("i2c0_grp", i2c0_pins),
-	UPBOARD_PIN_GROUP("i2c1_grp", i2c1_pins),
-	UPBOARD_PIN_GROUP("spi2_grp", spi2_pins),
-	UPBOARD_PIN_GROUP("i2s0_grp", i2s0_pins),
-	UPBOARD_PIN_GROUP("pwm0_grp", pwm0_pins),
-	UPBOARD_PIN_GROUP("pwm1_grp", pwm1_pins),
-	UPBOARD_PIN_GROUP("adc0_grp", adc0_pins),
-};
-
-static const char * const uart1_groups[] = { "uart1_grp" };
-static const char * const uart2_groups[] = { "uart2_grp" };
-static const char * const i2c0_groups[]  = { "i2c0_grp" };
-static const char * const i2c1_groups[]  = { "i2c1_grp" };
-static const char * const spi2_groups[]  = { "spi2_grp" };
-static const char * const i2s0_groups[]  = { "i2s0_grp" };
-static const char * const pwm0_groups[]  = { "pwm0_grp" };
-static const char * const pwm1_groups[]  = { "pwm1_grp" };
-static const char * const adc0_groups[]  = { "adc0_grp" };
-
-static const struct upboard_function pin_functions[] = {
-	FUNCTION("uart1", uart1_groups),
-	FUNCTION("uart2", uart2_groups),
-	FUNCTION("i2c0",  i2c0_groups),
-	FUNCTION("i2c1",  i2c1_groups),
-	FUNCTION("spi2",  spi2_groups),
-	FUNCTION("i2s0",  i2s0_groups),
-	FUNCTION("pwm0",  pwm0_groups),
-	FUNCTION("pwm1",  pwm1_groups),
-	FUNCTION("adc0",  adc0_groups),
 };
 
 /*
@@ -724,7 +642,6 @@ static void upboard_pin_dbg_show(struct pinctrl_dev *pctldev, struct seq_file *s
 	struct upboard_pinctrl *pctrl = pinctrl_dev_get_drvdata(pctldev);
 	void __iomem *padcfg;
 	u32 cfg0, cfg1, mode;
-	int locked;
 
 	if (pctrl->pins[pin].regs == NULL)
 		return;
@@ -745,7 +662,7 @@ static void upboard_pin_dbg_show(struct pinctrl_dev *pctldev, struct seq_file *s
 	if (padcfg)
 		seq_printf(s, " 0x%08x", readl(padcfg));
 
-	seq_printf(s, " 0x%08x", pctrl->pins[pin].regs);
+	seq_printf(s, " 0x%p", pctrl->pins[pin].regs);
 }
 
 static const struct pinctrl_ops upboard_pinctrl_ops = {
@@ -791,6 +708,9 @@ static void upboard_alt_func_enable(struct gpio_chip *gc, const char *name, int 
 	struct upboard_pinctrl *pctrl = container_of(gc, struct upboard_pinctrl, chip);
 	int offset[pctrl->pctldesc->npins];
 	int i, cnt;
+	bool input;
+	int mode;
+	unsigned int val;
 
 	/* find all pins */
 	for (i = 0, cnt = 0; i < pctrl->pctldesc->npins; i++) {
@@ -802,9 +722,9 @@ static void upboard_alt_func_enable(struct gpio_chip *gc, const char *name, int 
 	for (i = 0; i < cnt; i++) {
 		if (pctrl->pins[offset[i]].regs == NULL)
 			continue;
-		bool input = false;
-		int mode = 0; /* default GPIO */
-		unsigned int val = readl(pctrl->pins[offset[i]].regs);
+		input = false;
+		mode = 0; /* default GPIO */
+		val = readl(pctrl->pins[offset[i]].regs);
 
 		if (strstr(pctrl->pctldesc->pins[offset[i]].name, "I2C") ||
 		    strstr(pctrl->pctldesc->pins[offset[i]].name, "PINMUX")) {
@@ -830,6 +750,7 @@ static void upboard_alt_func_enable(struct gpio_chip *gc, const char *name, int 
 			case BOARD_UPN_EHL01:
 				mode = 4;
 				break;
+			case BOARD_UP_ADLN01:
 			case BOARD_UPN_ADLN01:
 			case BOARD_UPX_ADLP01:
 				mode = 2;
@@ -845,6 +766,7 @@ static void upboard_alt_func_enable(struct gpio_chip *gc, const char *name, int 
 			case BOARD_UP_WHL01:
 				mode = 3;
 				break;
+			case BOARD_UP_ADLN01:
 			case BOARD_UPN_ADLN01:
 			case BOARD_UPX_ADLP01:
 				mode = 7;
@@ -951,12 +873,12 @@ static int upboard_gpio_get_direction(struct gpio_chip *gc, unsigned int offset)
 {
 	struct upboard_pinctrl *pctrl = container_of(gc, struct upboard_pinctrl, chip);
 	unsigned int pin = pctrl->rpi_mapping[offset];
+	unsigned int padcfg0;
 
 	if (!pctrl->pins[pin].regs)
 		return -EINVAL;
 
-	unsigned int padcfg0 = readl(pctrl->pins[pin].regs);
-
+	padcfg0 = readl(pctrl->pins[pin].regs);
 	if (padcfg0 & PADCFG0_GPIOTXDIS)
 		return GPIO_LINE_DIRECTION_IN;
 
@@ -968,27 +890,28 @@ static int upboard_gpio_get(struct gpio_chip *gc, unsigned int offset)
 	struct upboard_pinctrl *pctrl = container_of(gc, struct upboard_pinctrl, chip);
 	unsigned int pin = pctrl->rpi_mapping[offset];
 	int gpio = upboard_rpi_to_native_gpio(gc, offset);
+	int reg_val = readl(pctrl->pins[pin].regs);
 
 	if (gpio < 0)
 		return gpio;
 
 	/* APL03 board open drain GPIO */
 	if (pctrl->ident == BOARD_UP_APL03) {
-		int val = 0;
-
 		switch (pin) {
 		case 0:
 		case 1:
 		case 9:
 		case 23:
-			val = readl(pctrl->pins[pin].regs);
-			return val & 0x00000003;
+			return reg_val & 0x00000003;
 		default:
 			break;
 		}
 	}
 
-	return gpiod_get_value(gpio_to_desc(gpio));
+	if (!(reg_val & PADCFG0_GPIOTXDIS))
+		return !!(reg_val & PADCFG0_GPIOTXSTATE);
+
+	return !!(reg_val & PADCFG0_GPIORXSTATE);
 }
 
 static void upboard_gpio_set(struct gpio_chip *gc, unsigned int offset,
@@ -997,34 +920,34 @@ static void upboard_gpio_set(struct gpio_chip *gc, unsigned int offset,
 	struct upboard_pinctrl *pctrl = container_of(gc, struct upboard_pinctrl, chip);
 	unsigned int pin = pctrl->rpi_mapping[offset];
 	int gpio = upboard_rpi_to_native_gpio(gc, offset);
+	int reg_val = readl(pctrl->pins[pin].regs);
 
 	if (gpio < 0)
 		return;
 
 	/* APL03 board open drain GPIO */
 	if (pctrl->ident == BOARD_UP_APL03) {
-		int val = 0;
-
 		switch (pin) {
 		case 0:
 		case 1:
 		case 9:
 		case 23:
-			val = readl(pctrl->pins[pin].regs);
-
 			if (value)
-				val |= PADCFG0_GPIOTXDIS;
+				reg_val |= PADCFG0_GPIOTXDIS;
 			else
-				val &= ~PADCFG0_GPIOTXDIS;
+				reg_val &= ~PADCFG0_GPIOTXDIS;
 
-			writel(val, pctrl->pins[pin].regs);
-			break;
+			writel(reg_val, pctrl->pins[pin].regs);
+			return;
 		default:
 			break;
 		}
 	}
-
-	gpiod_set_value(gpio_to_desc(gpio), value);
+	if (value)
+		reg_val |= PADCFG0_GPIOTXSTATE;
+	else
+		reg_val &= ~PADCFG0_GPIOTXSTATE;
+	writel(reg_val, pctrl->pins[pin].regs);
 }
 
 static int upboard_gpio_direction_input(struct gpio_chip *gc,
@@ -1103,7 +1026,7 @@ static void __iomem *upboard_get_regs(struct gpio_chip *gc, unsigned int gpio, u
 	return base + offset + reg + pin * nregs * 4;
 }
 
-int upboard_acpi_node_pin_mapping(struct upboard_fpga *fpga,
+static int upboard_acpi_node_pin_mapping(struct upboard_fpga *fpga,
 				  struct upboard_pinctrl *pctrl,
 				  const char *propname,
 				  const char *pinctl_name,
@@ -1116,7 +1039,7 @@ int upboard_acpi_node_pin_mapping(struct upboard_fpga *fpga,
 	if (IS_ERR(descs)) {
 		ret = PTR_ERR(descs);
 		if (ret != -EPROBE_DEFER)
-			dev_err(fpga->dev, "Failed to get %s gpios", propname);
+			dev_err(fpga->dev, "Failed to get %s GPIOs", propname);
 
 		return ret;
 	}
@@ -1160,8 +1083,22 @@ static struct gpio_chip upboard_gpio_chip = {
 	.owner = THIS_MODULE,
 };
 
-/* DMI Matches for older bios without fpga initialization */
+/* DMI Matches to assign pin mapping driver data */
 static const struct dmi_system_id upboard_dmi_table[] __initconst = {
+	{
+		.ident = BOARD_UP_APL01,
+		.matches = { /* UP SQUARED */
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UP-APL01"),
+		},
+	},
+	{
+		.ident = BOARD_UP_APL01,
+		.matches = { /* UP SQUARED Pro*/
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "AAEON"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "UPN-APL01"),
+		},
+	},
 	{
 		.ident = BOARD_UP_APL03,
 		.matches = { /* UP 4000 */
@@ -1228,47 +1165,47 @@ static const struct dmi_system_id upboard_dmi_table[] __initconst = {
 	{ }	/* Terminating entry */
 };
 
-static int __init upboard_pinctrl_probe(struct platform_device *pdev)
+static int upboard_pinctrl_probe(struct platform_device *pdev)
 {
 	struct upboard_fpga * const fpga = dev_get_drvdata(pdev->dev.parent);
-	struct acpi_device * const adev = ACPI_COMPANION(&pdev->dev);
 	struct pinctrl_desc *pctldesc;
 	struct upboard_pinctrl *pctrl;
 	struct upboard_pin *pins;
 	const struct dmi_system_id *system_id;
-	const char *hid;
 	const unsigned int *rpi_mapping;
 	unsigned int ngpio;
 	int ret;
 	int i;
+	/* default */
+	int board_id = BOARD_UP_APL03;
 
-	if (!fpga)
-		return -EINVAL;
-
-	if (!adev)
-		return -ENODEV;
-
-	/* set pin desc and rpi GPIO mapping table by HID */
-	hid = acpi_device_hid(adev);
-	if (!strcmp(hid, "AANT0F00") || !strcmp(hid, "AANT0F04") ||
-	    !strcmp(hid, "AANT0000")) {
-		pctldesc = &upboard_up_pinctrl_desc;
-		rpi_mapping = upboard_up_rpi_mapping;
-		ngpio = ARRAY_SIZE(upboard_up_rpi_mapping);
-	} else if (!strcmp(hid, "AANT0F01")) {
+	/* check board id to arrange driver data */
+	system_id = dmi_first_match(upboard_dmi_table);
+	if (system_id)
+		board_id = system_id->ident;
+	dev_info(&pdev->dev, "Compatible Up Board ID %d", board_id);
+	switch (board_id) {
+	case BOARD_UP_APL01:
 		pctldesc = &upboard_up2_pinctrl_desc;
 		rpi_mapping = upboard_up2_rpi_mapping;
 		ngpio = ARRAY_SIZE(upboard_up2_rpi_mapping);
-	} else if (!strcmp(hid, "AANT0F02")) {
+		break;
+	case BOARD_UP_UPCORE:
 		pctldesc = &upboard_upcore_crex_pinctrl_desc;
 		rpi_mapping = upboard_upcore_crex_rpi_mapping;
 		ngpio = ARRAY_SIZE(upboard_upcore_crex_rpi_mapping);
-	} else if (!strcmp(hid, "AANT0F03")) {
+		break;
+	case BOARD_UP_CORE_PLUS:
 		pctldesc = &upboard_upcore_crst02_pinctrl_desc;
 		rpi_mapping = upboard_upcore_crst02_rpi_mapping;
 		ngpio = ARRAY_SIZE(upboard_upcore_crst02_rpi_mapping);
-	} else
-		return -ENODEV;
+		break;
+	default:
+		pctldesc = &upboard_up_pinctrl_desc;
+		rpi_mapping = upboard_up_rpi_mapping;
+		ngpio = ARRAY_SIZE(upboard_up_rpi_mapping);
+		break;
+	}
 
 	pctldesc->name = dev_name(&pdev->dev);
 
@@ -1330,6 +1267,7 @@ static int __init upboard_pinctrl_probe(struct platform_device *pdev)
 	pctrl->chip.parent = &pdev->dev;
 	pctrl->chip.ngpio = ngpio;
 	pctrl->pins = pins;
+	pctrl->ident = board_id;
 
 	ret = devm_gpiochip_add_data(&pdev->dev, &pctrl->chip, pctrl);
 	if (ret)
@@ -1347,19 +1285,13 @@ static int __init upboard_pinctrl_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	/* check for special board versions that require register patches */
-	system_id = dmi_first_match(upboard_dmi_table);
-	if (system_id)
-		pctrl->ident = system_id->ident;
-	else
-		pctrl->ident = BOARD_UP_APL03;
-
 	upboard_alt_func_enable(&pctrl->chip, "I2C",    pctrl->ident);
 	upboard_alt_func_enable(&pctrl->chip, "SPI",    pctrl->ident);
 	upboard_alt_func_enable(&pctrl->chip, "UART",   pctrl->ident);
 	upboard_alt_func_enable(&pctrl->chip, "I2S",    pctrl->ident);
 	upboard_alt_func_enable(&pctrl->chip, "PWM",    pctrl->ident);
 	upboard_alt_func_enable(&pctrl->chip, "ADC",    pctrl->ident);
+	upboard_alt_func_enable(&pctrl->chip, "PINMUX", pctrl->ident);
 
 	return ret;
 }

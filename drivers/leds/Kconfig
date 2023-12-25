@@ -875,7 +875,7 @@ source "drivers/leds/rgb/Kconfig"
 config LEDS_UPBOARD
 	tristate "LED support for the UP board"
 	depends on LEDS_CLASS
-	depends on MFD_INTEL_UPBOARD_FPGA
+	depends on MFD_UPBOARD_FPGA
 	help
 	  This option enables support for the UP board LEDs.
 

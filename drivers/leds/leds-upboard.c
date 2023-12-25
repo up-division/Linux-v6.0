@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * UP Board CPLD/FPGA based LED driver
+ * UP Board CPLD/GPIO based LED driver
  *
  * Copyright (c) AAEON. All rights reserved.
  *
@@ -46,7 +46,7 @@ static const struct mfd_cell upboard_gpio_led_cells[] = {
 		       sizeof(upboard_gpio_led_pd), 0)
 };
 
-int upboard_led_gpio_register(struct upboard_fpga *fpga)
+static int upboard_led_gpio_register(struct upboard_fpga *fpga)
 {
 	struct gpio_led blue_led, yellow_led, green_led, red_led;
 	struct gpio_desc *desc;
@@ -109,7 +109,7 @@ int upboard_led_gpio_register(struct upboard_fpga *fpga)
 	return 0;
 }
 
-static int __init upboard_led_probe(struct platform_device *pdev)
+static int upboard_led_probe(struct platform_device *pdev)
 {
 	struct upboard_fpga * const cpld = dev_get_drvdata(pdev->dev.parent);
 	struct reg_field fldconf = {

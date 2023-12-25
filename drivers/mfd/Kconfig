@@ -2104,12 +2104,12 @@ config MFD_QCOM_PM8008
 	  under it in the device tree. Additional drivers must be enabled in
 	  order to use the functionality of the device.
 
-config MFD_INTEL_UPBOARD_FPGA
+config MFD_UPBOARD_FPGA
 	tristate "Support for the Intel platform foundation kit UP board FPGA"
 	select MFD_CORE
-	depends on X86 && ACPI
+	depends on (X86 && ACPI) || COMPILE_TEST
 	help
-	  Select this option to enable the Intel AAEON UP and UP^2 on-board FPGA.
+	  Select this option to enable the AAEON UP and UP^2 on-board FPGA.
 	  This is core driver for the UP board that implements certain (pin
 	  control, onboard LEDs or CEC) through an on-board FPGA.
 
